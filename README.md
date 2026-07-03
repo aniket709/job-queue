@@ -1,107 +1,360 @@
-# Mini Job Queue
+# 🚀 Mini Job Queue
 
-A background job queue system (a small BullMQ/Sidekiq-style engine) built with
-**Redis** for fast dispatch and **Postgres + Prisma** as the durable source of
-truth. Supports retries with exponential backoff, dead-letter queues,
-idempotency, delayed/scheduled jobs, and crash recovery.
+A Mini Job Queue** is a background task processing system that executes work asynchronously instead of making users wait.
 
-## Why two databases?
+Examples of background jobs include:
 
-| Concern | Owner | Why |
-|---|---|---|
-| Live queue mechanics (waiting / delayed) | **Redis** | Sub-millisecond push/pop; sorted sets are a natural fit for "run this at time T" |
-| Durable job record, history, dashboard queries | **Postgres** | Survives restarts; supports `GROUP BY`, filtering, joins |
-| Preventing double-processing | **Redis** `BRPOP` | Atomic pop — two workers can never grab the same job ID |
-| Dead-letter queue | **Postgres** | Needs to be queryable/searchable long-term, not just sitting in memory |
+* 📧 Sending emails
+* 🌐 Calling external APIs
+* 🛒 Processing orders
+* 📱 Sending notifications
 
-Redis only ever stores **job IDs**. Postgres always owns the actual job data.
-If Redis is flushed or restarted, no jobs are lost — `reconcile()` rebuilds
-Redis's queues from Postgres on worker startup.
+This project is inspired by tools like **BullMQ** and **Sidekiq** and is built using **Redis**, **PostgreSQL**, and **Prisma**.
 
-## Architecture
+---
+
+# ✨ Features
+
+* Background job processing
+* Automatic retries with exponential backoff
+* Dead Letter Queue (DLQ)
+* Delayed and scheduled jobs
+* Crash recovery
+* Idempotency support
+* Multiple worker support
+* Redis + PostgreSQL architecture
+
+---
+
+# 🛠 Tech Stack
+
+| Technology | Purpose               |
+| ---------- | --------------------- |
+| Node.js    | Backend Runtime       |
+| TypeScript | Programming Language  |
+| PostgreSQL | Permanent Job Storage |
+| Prisma     | Database ORM          |
+| Redis      | Fast Queue Storage    |
+
+---
+
+# 🏗 Architecture
 
 ```
-Producer (API) --INSERT--> Postgres (source of truth)
-                --LPUSH/ZADD--> Redis (waiting / delayed)
-
-Worker  --BRPOP--> Redis          (claim next job ID)
-        --SELECT/UPDATE--> Postgres (fetch + mark active)
-        --run handler--
-          success --> Postgres: status=completed
-          failure --> Postgres: attempts++, status=pending, runAt=now+backoff
-                      Redis: ZADD into delayed set
-
-Promoter (background loop, every 1s)
-  --ZRANGEBYSCORE--> find delayed jobs whose runAt has passed
-  --LPUSH--> move them into the waiting list
-
-Reaper (background loop, every 30s)
-  --> finds jobs stuck in `active` for >5min (crashed worker)
-  --> requeues them
+                    User
+                      │
+                      ▼
+                 POST /jobs
+                      │
+          ┌───────────┴───────────┐
+          │                       │
+          ▼                       ▼
+ PostgreSQL                 Redis Queue
+(Source of Truth)         (Waiting Jobs)
+          │                       │
+          └───────────┬───────────┘
+                      │
+                      ▼
+                  Worker
+                      │
+              Process the Job
+              │             │
+         Success         Failure
+              │             │
+              ▼             ▼
+        Completed      Retry Later
+                            │
+                   Maximum Retries?
+                      │         │
+                     No        Yes
+                      │         ▼
+                      │    Dead Letter Queue
+                      ▼
+                Retry Again
 ```
 
-## Setup
+---
 
-```bash
-cp .env.example .env
-docker compose up -d          # starts Postgres + Redis
-npm install
-npx prisma migrate dev --name init
-npx prisma generate
+# 📌 Why Two Databases?
+
+Each database has a different responsibility.
+
+| Database       | Responsibility                                              |
+| -------------- | ----------------------------------------------------------- |
+| **Redis**      | Stores the waiting queue and quickly gives jobs to workers. |
+| **PostgreSQL** | Stores complete job information permanently.                |
+
+Think of it like this:
+
+* **Redis** is a whiteboard where today's work is written.
+* **PostgreSQL** is a notebook where every job is permanently recorded.
+
+If Redis crashes or is cleared, the queue can be rebuilt from PostgreSQL because all jobs are stored there.
+
+---
+
+# ⚙️ How It Works
+
+## 1. User Creates a Job
+
+A user sends a request such as:
+
+> Send this email.
+
+The API performs two actions:
+
+* Saves the complete job in PostgreSQL.
+* Stores only the Job ID in Redis.
+
+---
+
+## 2. Worker Picks the Job
+
+Workers continuously wait for new jobs.
+
+When a job appears:
+
+1. The worker removes the Job ID from Redis.
+2. Fetches the complete job from PostgreSQL.
+3. Marks the job as **Active**.
+4. Executes the task.
+
+Redis removes the Job ID immediately after a worker takes it, ensuring that two workers cannot process the same job.
+
+---
+
+## 3. Successful Execution
+
+If everything goes well:
+
+* The worker updates PostgreSQL.
+* Job status becomes **Completed**.
+
+---
+
+## 4. Failed Execution
+
+Sometimes jobs fail because:
+
+* External API is unavailable.
+* Internet connection fails.
+* Email service is temporarily down.
+
+Instead of failing permanently, the job is scheduled for another attempt.
+
+The retry delay increases after every failure.
+
+Example:
+
+```
+1st Retry → 2 seconds
+
+2nd Retry → 4 seconds
+
+3rd Retry → 8 seconds
+
+4th Retry → 16 seconds
 ```
 
-Run each process in its own terminal:
+This is called Exponential Backoff.
 
-```bash
-npm run dev:api        # POST /jobs, GET /stats, etc — http://localhost:3000
-npm run dev:worker     # processes jobs (run multiple instances to test concurrency)
-npm run dev:promoter   # promotes due delayed/retry jobs into the waiting queue
+A small random delay (jitter) is also added so thousands of jobs don't retry at the exact same moment.
+
+---
+
+# 💀 Dead Letter Queue (DLQ)
+
+If a job fails even after reaching its maximum retry limit,
+
+it is moved into the Dead Letter Queue.
+
+These jobs require manual inspection and can be retried later if needed.
+
+---
+
+# ⏰ Delayed Jobs
+
+Sometimes a job should run in the future instead of immediately.
+
+Example:
+
+> Send a birthday email tomorrow at 9 AM.
+
+The job is stored in Redis with its scheduled execution time.
+
+A background process called the **Promoter** checks every second.
+
+When the scheduled time arrives,
+
+the job is moved into the waiting queue where a worker can process it.
+
+---
+
+# 🔄 Crash Recovery
+
+Suppose a worker crashes while processing a job.
+
+The job would remain marked as **Active** forever.
+
+To prevent this,
+
+another background process called the **Reaper** runs every 30 seconds.
+
+It checks for jobs that have been active for too long.
+
+If such a job is found,
+
+it is placed back into the waiting queue so another worker can continue processing it.
+
+---
+
+# 🔐 Idempotency
+
+Users sometimes submit the same request multiple times by accident.
+
+Example:
+
+Clicking the **Submit** button twice.
+
+An **Idempotency Key** ensures that duplicate requests create only one job.
+
+This prevents duplicate submissions.
+
+---
+
+# 🔁 Complete Flow
+
+```
+                User
+                  │
+                  ▼
+          API Receives Request
+                  │
+      ┌───────────┴───────────┐
+      │                       │
+      ▼                       ▼
+ Save Job               Push Job ID
+PostgreSQL                to Redis
+      │                       │
+      └───────────┬───────────┘
+                  │
+                  ▼
+            Worker Waits
+                  │
+                  ▼
+          Takes Job ID
+                  │
+                  ▼
+   Reads Full Job from PostgreSQL
+                  │
+                  ▼
+          Executes the Job
+            │            │
+            │            │
+         Success      Failure
+            │            │
+            ▼            ▼
+      Completed     Schedule Retry
+                         │
+                 Retry Count Exceeded?
+                     │          │
+                    No         Yes
+                     │          ▼
+                     │   Dead Letter Queue
+                     ▼
+              Retry Processing
 ```
 
-Seed some demo jobs:
+---
 
-```bash
-npm run seed:chaos -- 200     # enqueues 200 chaos jobs with a 40% failure rate
-```
-
-Watch `/stats` or the worker logs to see retries, backoff, and dead-lettering
-happen live.
+# 🧩 Background Services
 
 ## API
 
-- `POST /jobs` — `{ type, payload, runAt?, maxAttempts?, idempotencyKey? }`
-- `GET /jobs/:id` — fetch a single job
-- `GET /jobs?status=dead&type=sendEmail` — list/filter jobs
-- `GET /stats` — counts by status + recently dead jobs (dashboard data)
-- `POST /jobs/:id/retry` — manually requeue a dead job
+Responsible for:
 
-## Job types
+* Receiving job requests
+* Saving jobs
+* Adding jobs to Redis
 
-- `chaos` — synthetic job with configurable failure rate/duration, used to
-  demo and load-test retry/backoff/DLQ behavior on demand
-- `sendEmail` — simulated email send (swap in a real provider later; the
-  queue engine doesn't need to change)
-- `sendWebhook` — a **real** HTTP POST — point it at
-  [webhook.site](https://webhook.site) to watch deliveries arrive live
+---
 
-## Key design decisions
+## Worker
 
-- **At-least-once delivery, not exactly-once.** A job could theoretically run
-  twice (e.g. worker crashes after completing work but before marking the
-  job `completed`). Handlers should be idempotent where it matters —
-  `idempotencyKey` on enqueue prevents duplicate *submissions*, not duplicate
-  *executions* of an already-claimed job.
-- **Exponential backoff with jitter** avoids a thundering herd where many
-  retries fire in the same instant and hammer a downstream service.
-- **Redis `BRPOP` for claiming jobs** is what guarantees two workers never
-  process the same job — it's an atomic pop, not a read-then-write.
-- **Postgres reconciliation on worker startup** means Redis is treated as a
-  cache/dispatch layer, not the source of truth — losing it is recoverable.
+Responsible for:
 
-## Load testing
+* Picking jobs
+* Processing them
+* Updating job status
 
-```bash
-npm run seed:chaos -- 5000
-# then, with autocannon or k6, hit /stats repeatedly to watch throughput,
-# or just tail worker logs to see retries/DLQ happening under load
-```
+---
+
+## Promoter
+
+Runs every second.
+
+Responsible for moving delayed jobs into the waiting queue.
+
+---
+
+## Reaper
+
+Runs every 30 seconds.
+
+Responsible for finding stuck jobs and requeuing them.
+
+---
+
+# 📦 Job Types
+
+### Chaos Job
+
+A testing job that randomly succeeds or fails.
+
+Useful for testing retries, exponential backoff, and the Dead Letter Queue.
+
+---
+
+### Send Email
+
+Simulates sending emails.
+
+A real email provider can be connected later without changing the queue engine.
+
+---
+
+### Send Webhook
+
+Sends a real HTTP POST request to another server.
+
+Useful for webhook testing.
+
+---
+
+# ✅ Advantages
+
+* Extremely fast queue operations using Redis.
+* Permanent job storage using PostgreSQL.
+* Automatic retries.
+* Dead Letter Queue for failed jobs.
+* Delayed job scheduling.
+* Crash recovery.
+* Duplicate submission prevention.
+* Supports multiple workers safely.
+
+---
+
+# 🍽 Real-Life Example
+
+Imagine a restaurant.
+
+* A Customer** places an order.
+* The Cashier (API) writes the order into a permanent notebook (PostgreSQL).
+* The order number is also placed on the kitchen board (Redis).
+* A Chef (Worker) picks the next order.
+* If cooking succeeds, the order is completed.
+* If something goes wrong, the order is retried after waiting.
+* If it keeps failing, it goes into the **Problem Orders** folder (Dead Letter Queue).
+* If a chef suddenly leaves, another chef later continues the unfinished order.
+
+This architecture combines the speed of Redis with the reliability of PostgreSQL to build a robust and fault-tolerant background job processing system.
