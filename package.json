@@ -1,0 +1,35 @@
+{
+  "name": "mini-job-queue",
+  "version": "1.0.0",
+  "description": "A Redis + Postgres backed job queue system (mini BullMQ/Sidekiq clone)",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev:api": "tsx watch src/api/server.ts",
+    "dev:worker": "tsx watch src/workers/worker.ts",
+    "dev:promoter": "tsx watch src/queue/promoter.ts",
+    "build": "tsc",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:studio": "prisma studio",
+    "seed:chaos": "tsx src/lib/seedChaos.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "ioredis": "^5.4.1",
+    "pino": "^9.4.0",
+    "pino-pretty": "^11.2.2",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.4",
+    "@types/uuid": "^10.0.0",
+    "prisma": "^5.20.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

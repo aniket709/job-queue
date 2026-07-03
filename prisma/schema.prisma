@@ -1,0 +1,42 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum JobStatus {
+  pending
+  active
+  completed
+  failed
+  dead
+}
+
+model Job {
+  id          String    @id @default(uuid())
+  type        String
+  payload     Json
+  status      JobStatus @default(pending)
+
+  attempts    Int       @default(0)
+  maxAttempts Int       @default(5)
+
+  runAt       DateTime  @default(now()) // when this job becomes eligible to run
+  lockedAt    DateTime? // set when a worker picks it up (used for stuck-job recovery)
+  lockedBy    String?   // worker id, for observability
+
+  lastError   String?
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  // idempotency: if set, duplicate enqueue calls with the same key are ignored
+  idempotencyKey String? @unique
+
+  @@index([status, runAt])
+  @@index([type])
+}
